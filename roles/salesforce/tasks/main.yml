@@ -1,0 +1,18 @@
+- name: "Download NodeJS install script"
+  get_url: 
+    url: "https://rpm.nodesource.com/setup_8.x"
+    dest: /tmp
+    mode: "0755"
+
+- name: "Install NodeJS RPM"
+  shell: "/tmp/setup_8.x"
+
+- name: "Install NodeJS"
+  yum:
+      name: nodejs
+      state: present
+
+- name: Install SFDX CLI
+  npm:
+    name: sfdx-cli
+    global: yes

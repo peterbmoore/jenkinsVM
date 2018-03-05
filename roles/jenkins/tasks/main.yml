@@ -1,0 +1,145 @@
+---
+  - name: "Ensure Jenkins is stopped"
+    service:
+      name: jenkins
+      state: stopped
+    ignore_errors: yes
+
+  - name: "Add Jenkins repo"
+    get_url: url="{{jenkins_repo}}" dest="/etc/yum.repos.d/jenkins.repo"
+
+  - name: "Import Jenkins key"
+    rpm_key:
+      state: present
+      key: "{{jenkins_key}}"
+
+  - name: "Install jenkins"
+    yum:
+        name: jenkins
+        state: present
+
+  - name: "Set command line options"
+    lineinfile:
+      dest: /etc/sysconfig/jenkins
+      regexp: '^JENKINS_JAVA_OPTIONS='
+      line: 'JENKINS_JAVA_OPTIONS="-Djava.awt.headless=true -Djenkins.install.runSetupWizard=false"'
+
+  - name: "Start Jenkins"
+    service:
+      name: jenkins
+      state: started
+
+  - name: "Wait for Jenkins port"
+    wait_for: port=8080
+
+  - name: "Wait for Jenkins to start"
+    uri:
+      url: "http://localhost:8080"
+      status_code: 200
+    register: result
+    until: result.status == 200
+    retries: 30
+    delay: 1
+
+  - name: "Install plugins"
+    uri:
+      url: "http://localhost:8080/pluginManager/installNecessaryPlugins"
+      method: POST
+      headers:
+        Content-Type: "text/html"
+      body: "<jenkins><install plugin=\"{{ item }}@latest\"/></jenkins>"
+      status_code: 200,302
+    with_items: "{{ jenkins_plugins }}"
+
+  - name: Wait for plugins to be installed
+    uri:
+      url: "http://localhost:8080/updateCenter/installStatus"
+      return_content: yes
+    register: jenkins_plugin_status
+    until: "'Pending' not in jenkins_plugin_status.json.data.jobs|map(attribute='installStatus')"
+    retries: 60
+    delay: 10
+
+  - name: Check if we need to restart Jenkins to activate plugins
+    uri:
+      url: "http://localhost:8080/updateCenter/api/json?tree=restartRequiredForCompletion"
+      return_content: yes
+    register: jenkins_restart_required
+
+  - name: Restart Jenkins to activate new plugins
+    service: name=jenkins state=restarted
+    when: jenkins_restart_required.json.restartRequiredForCompletion|bool
+
+  - name: Wait for Jenkins to become available
+    wait_for: port=8080
+
+  - name: Ensure .ssh directory exists
+    file: 
+      dest: "{{jenkins_home}}/.ssh"
+      state: directory
+      mode: 0700
+      owner: jenkins
+      group: jenkins
+
+  - name: Install ssh key
+    copy: 
+      src: "keys/id_rsa_{{ item }}" 
+      dest: "{{ jenkins_home }}/.ssh/id_rsa_{{ item }}"
+      mode: 0600
+      owner: jenkins
+      group: jenkins
+    with_items:
+      - student
+      - enterprise
+
+
+  # - name: Get list of jobs
+  #   uri:
+  #     url: "http://localhost:8080/api/json?tree=jobs[name]"
+  #     return_content: yes
+  #   register: jenkins_jobs
+  #   until: jenkins_jobs.content.find('Please wait while Jenkins is getting ready to work') == -1
+  #   retries: 10
+  #   delay: 5
+
+  # - name: Check if seed job exists
+  #   set_fact:
+  #     jenkins_seed_job_exists: "{{ jenkins_seed_name in (jenkins_jobs.content|from_json).jobs|map(attribute='name')|list }}"
+
+  # - name: Create seed job
+  #   uri:
+  #     url: "http://localhost:8080/createItem?name={{ jenkins_seed_name }}"
+  #     method: POST
+  #     headers:
+  #       Content-Type: "application/xml"
+  #     body: "{{ lookup('template', jenkins_seed_template) }}"
+  #   register: jenkins_seed_job_created
+  #   when: not jenkins_seed_job_exists
+
+  # - name: Update seed job
+  #   uri:
+  #     url: "http://localhost:8080/job/{{ jenkins_seed_name }}/config.xml"
+  #     method: POST
+  #     headers:
+  #       Content-Type: "application/xml"
+  #     body: "{{ lookup('template', jenkins_seed_template) }}"
+  #   register: jenkins_seed_job_updated
+  #   when: jenkins_seed_job_exists
+
+  # - name: Run seed job
+  #   uri:
+  #     url: "http://localhost:8080/job/{{ jenkins_seed_name }}/build"
+  #     method: POST
+  #     status_code: 201
+  #   register: jenkins_seed_job_started
+  #   when: jenkins_seed_job_created|success or jenkins_seed_job_updated|success
+
+  # - name: Wait for seed job
+  #   uri:
+  #     url: "http://localhost:8080/job/{{ jenkins_seed_name }}/lastBuild/buildNumber"
+  #     method: GET
+  #     status_code: 200
+  #   register: jenkins_seed
+  #   until: jenkins_seed['status']|default(0) == 200
+  #   retries: 10
+  #   delay: 5
